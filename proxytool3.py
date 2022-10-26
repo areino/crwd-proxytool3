@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
 
-## ProxyTool v3.1
-## Basically v3.0 but ported to falconpy SDK instead of reinventing the wheel
-## It now requires falconpy (https://github.com/CrowdStrike/falconpy) instead of requests
+## ProxyTool v3.2
+##
+## CHANGE LOG
+##
+## 26/10/2022   v3.2    Add support for Host Group or CID selection
+## 25/10/2022   v3.1    Ported to falconpy SDK instead of reinventing the wheel
+## 23/10/2022   v3.0    Rewrote 2.0 for error handling, logging and fetching host IDs from API
+##
 
 
 import json
@@ -18,6 +23,7 @@ try:
     from falconpy import Hosts
     from falconpy import OAuth2
     from falconpy import RealTimeResponse
+    from falconpy import HostGroup
 except ImportError as err:
     log(err)
     log('Python falconpy library is required. Install with: python3 -m pip install crowdstrike-falconpy')
@@ -37,6 +43,12 @@ if (creds.api_client_id == "" or creds.api_client_secret == ""):
 else:
     log("Using API client " + creds.api_client_id)
 
+if creds.scope.lower() not in ["cid", "hostgroup"]:
+    log("The scope variable needs to be 'cid' or 'hostgroup'")
+    exit()
+
+
+
 #####################################
 
 
@@ -49,17 +61,32 @@ auth = OAuth2(client_id=creds.api_client_id, client_secret=creds.api_client_secr
 
 ## Fetch list of hosts
 
-log("Getting all hosts")
+if creds.scope.lower() == "cid":
+    log("Getting all hosts from CID [" + creds.scope_id + "]")
+    falcon = Hosts(auth_object=auth)
+else:
+    log("Getting all hosts from host group ID [" + creds.scope_id + "]")
+    falcon = HostGroup(auth_object=auth)
+
 
 offset = ""
 hosts_all = []
 
-falcon = Hosts(auth_object=auth)
+
 
 while True:
     batch_size = 5000 ## 5000 is max supported by API
     
-    response = falcon.query_devices_by_filter_scroll(offset=offset, limit=batch_size, filter="platform_name:'Windows'")
+    if creds.scope.lower() == "cid":
+        ## Fetch all Windows CID hosts
+        response = falcon.query_devices_by_filter_scroll(offset=offset, limit=batch_size, filter="platform_name:'Windows'")
+    else:
+        ## Fetch all Windows host group ID hosts
+        if offset == "":
+            response = falcon.query_group_members(limit=batch_size, filter="platform_name:'Windows'", id=creds.scope_id)
+        else:
+            response = falcon.query_group_members(offset=offset, limit=batch_size, filter="platform_name:'Windows'", id=creds.scope_id)
+
     offset = response['body']['meta']['pagination']['offset']
 
     for host_id in response['body']['resources']:
@@ -108,14 +135,14 @@ for store in registry_stores:
             log("Error, Response: " + response["status_code"] + " - " + response.text)
             exit()           
     
-    code = falcon.batch_active_responder_command(batch_id=batch_id, base_command="reg set", command_string="reg set " + store + " CsProxyHostname -ValueType=REG_SZ -Value=" + creds.proxy_hostname)
+#    code = falcon.batch_active_responder_command(batch_id=batch_id, base_command="reg set", command_string="reg set " + store + " CsProxyHostname -ValueType=REG_SZ -Value=" + creds.proxy_hostname)
     if response["status_code"] == 201:
         log("-- Issuing registry setting of CsProxyHostname to " + creds.proxy_hostname + " in " + store)
     else:
         log("Error, Response: " + response["status_code"] + " - " + response.text)
         exit()   
 
-    code = falcon.batch_active_responder_command(batch_id=batch_id, base_command="reg set", command_string="reg set " + store + " CsProxyport -ValueType=REG_DWORD -Value=" + creds.proxy_port)
+#    code = falcon.batch_active_responder_command(batch_id=batch_id, base_command="reg set", command_string="reg set " + store + " CsProxyport -ValueType=REG_DWORD -Value=" + creds.proxy_port)
     if response["status_code"] == 201:
         log("-- Issuing registry setting of CsProxyport to " + creds.proxy_hostname + " in " + store)
     else:
